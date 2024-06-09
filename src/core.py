@@ -1,8 +1,10 @@
 import json
 import os
+import time
 #from src.constants import KEY_ERROR, ITEM_ERROR, ARGS_ERROR, MAX_FILE_SIZE
 
-MAX_FILE_SIZE = 1000000  # Maximum file size in bytes (1 MB)
+MAX_FILE_SIZE = 10000000  # Maximum file size in bytes (1 MB)
+FLUSH_THRESHOLD = 5  # Set N for how many deletes before a flush
 
 class Index:
     def __init__(self, table_name, field):
@@ -30,11 +32,12 @@ class Core:
         self.data_files = {}
         self.indexes = {}
         self.delete_markers = {}
+        self.delete_counter = 0
 
         if not os.path.exists(db_path):
             os.makedirs(db_path)
 
-    def _get_data_files(self):  # потрібен буде пошук по всіх файлах?
+    def _get_data_files(self):
         return os.listdir(self.db_path)
     
     @staticmethod
@@ -43,8 +46,19 @@ class Core:
         key = key.strip().strip('"')
         value = value.strip().strip('"')
         return key, value
+    
+    @staticmethod
+    def _decorator_timer(func):
+        def wrapper(*args, **kwargs):
+            start = time.time()
+            result = func(*args, **kwargs)
+            end = time.time()
+            print(f"Function {func.__name__} executed in {end - start:.5f} seconds")
+            return result
+        return wrapper
 
-    def insert(self, table_name, obj):
+    @_decorator_timer
+    def insert(self, table_name, obj):  # Приблизно за 1/4 секунди інсертиться
         file_path = self._get_table_path(table_name)
 
         if table_name not in self.data_files:
@@ -59,32 +73,49 @@ class Core:
                 else:
                     file.seek(0)  # Move the cursor back to the start of the file
                     data = json.load(file)
+                    if table_name not in data:
+                        data[table_name] = []
                     if not data[f'{table_name}']:
                         obj['id'] = 1  # Set the id of the first user to 1
                     else:
-                        max_id = max(user['id'] for user in data[f'{table_name}'])  # Find the current maximum id
+                        max_id = max(user.get('id', 0) for user in data[f'{table_name}'])  # Find the current maximum id
                         obj['id'] = max_id + 1  # Set the id of the new user to the current maximum id + 1
                     data[f'{table_name}'].append(obj)
 
         self._write_table(table_name, data)
 
+    @_decorator_timer
     def update(self, table_name, condition, updates):
         file_path = self._get_table_path(table_name)
+        data = self._read_table(table_name)
 
         if os.path.exists(file_path):
-            with open(file_path, 'r'):
-                pass
+            search_results = self.select(table_name, condition)
 
+            if not search_results:
+                raise ValueError(f"No matching records found in table {table_name} for condition {condition}")
+                
+            for obj in data[table_name]:
+                if obj in search_results:
+                    for key, value in updates.items():
+                        obj[key] = value
+
+            self._write_table(table_name, data)
+        else:
+            raise ValueError(f"Table {table_name} does not exist")
+    
+    @_decorator_timer
     def select(self, table_name, condition):
         file_path = self._get_table_path(table_name)
         data = self._read_table(table_name)
 
         if os.path.exists(file_path):
-            objects = [obj for obj in data[table_name]]
+            objects = [obj for obj in data[table_name] if not self._is_obj_deleted(obj)]
             parsed_condition = self._parse_condition(condition)
             key, value = parsed_condition
+
             if value == "null":
-                value = None  # If value is the string "None", set it as None
+                value = None  # Convert 'null' to None
             elif value == "true":
                 value = True
             else:
@@ -92,37 +123,60 @@ class Core:
                     value = int(value)  # Try to convert value to an integer (searching for id)
                 except ValueError:
                     pass
+
             results = [check for check in objects if key in check and check[key] == value]
+
+            if not results:
+                raise ValueError(f"No matching records found in table {table_name} for condition {condition}")
+            
             return results
         else:
             raise ValueError(f"Table {table_name} does not exist")
 
-    # TODO: реалізувати маркери видалення (щоб об'єкт позначався видаленним)
+    @_decorator_timer
     def delete(self, table_name, condition):
+        all_data = self._read_table(table_name)
         data_to_delete = self.select(table_name, condition)
-        if len(data_to_delete) > 0:
-            all_data = self._read_table(table_name)
-            objects = [obj for obj in all_data[table_name]]
-            remaining_data = [obj for obj in objects if obj not in data_to_delete]
-            self._rewrite_table(table_name, remaining_data)
+
+        if data_to_delete:
+            if table_name not in self.delete_markers:
+                self.delete_markers[table_name] = set()
+
+            for obj in data_to_delete:
+                id = obj.get('id')
+
+                if id in self.delete_markers[table_name]:
+                    print(f"Object with id {id} is already marked for deletion")
+
+                self.delete_markers[table_name].add(id)
+                self.delete_counter += 1
+
+                if self.delete_counter >= FLUSH_THRESHOLD:
+                    remaining_data = list(filter(lambda obj: obj.get('id') not in self.delete_markers[table_name], all_data[table_name]))
+                    self._rewrite_table(table_name, remaining_data)
+                    self.delete_counter = 0
+                    self.delete_markers[table_name].clear()
         else:
             raise ValueError(f"Data to delete not found in table {table_name}")
         
-    def _is_deleted(self, object):
+    def _is_obj_deleted(self, obj):
+        return obj.get('id') in self.delete_markers.get('users', set())
+    
+    def flush(self, table_name): # ???
         pass
 
-    def flush(self, table_name):
-        pass
-
-    def create_index(self, table_name, fields):
+    def create_index(self, table_name, fields): # не працює, можна використати для приклада
         if table_name not in self.indexes:
             self.indexes[table_name] = {}
+
         for field in fields:
+            print(field)
             self.indexes[table_name][field] = self._create_index_for_field(table_name, field)
 
-    def _create_index_for_field(self, table_name, field):
+    def _create_index_for_field(self, table_name, field):  # не працює, можна використати для приклада
         file_path = self._get_table_path(table_name)
         index = {}
+        
         with open(file_path, 'r') as f:
             offset = 0
             for line in f:
@@ -136,7 +190,7 @@ class Core:
     
     def _get_table_path(self, table_name):
         base_path = os.path.join(self.db_path, f"{table_name}.json")
-        if os.path.exists(base_path) and os.path.getsize(base_path) > MAX_FILE_SIZE: # If the file is too large (over 1 MB) create a new file
+        if os.path.exists(base_path) and os.path.getsize(base_path) > MAX_FILE_SIZE: # If the file is too large (over 1 MB), create a new file
             i = 1
             while True:
                 new_path = os.path.join(self.db_path, f"{table_name}_{i}.json")
@@ -154,6 +208,7 @@ class Core:
         file_path = self._get_table_path(table_name)
 
         with open(file_path, 'w') as file:
+            #file.seek(start_byte)
             json.dump(data, file, indent=4)
 
     def _rewrite_table(self, table_name, new_data):
@@ -168,22 +223,65 @@ class Core:
                 json.dump(data, file, indent=4)
         else:
             raise ValueError(f"Table {table_name} does not exist")
+        
+    def _get_byte_offset(self, file_path):   # не працює, можна використати для приклада
+        with open(file_path, 'rb') as file:
+            file.seek(0, os.SEEK_END)  # Move the cursor to the end of the file
+            file_size = file.tell()    # Get the current position of the cursor, which is the size of the file
+            #return f"File size: {file_size} bytes, {os.path.getsize(file_path)} bytes"
+            return file.read()
+
+    # Ці теж можна використати як приклад для реалізації
+
+    def _get_index_by_key(self, table_name, field):
+        return self.indexes[table_name][field]
+    
+    def _search_in_index_by_value(self, table_name, field, value):
+        index = self._get_index_by_key(table_name, field)
+        return index.get(value, [])
+    
+    def _get_from_file_by_adress(self, file_path, byte_offset):
+        with open(file_path, 'r') as file:
+            file.seek(byte_offset)
+            return json.load(file) 
+        
+def update_nested_dict(data, key, value, new_value):
+    if isinstance(data, dict):
+        for k, v in data.items():
+            if k == key and v == value:
+                data[k] = new_value
+            elif isinstance(v, dict):
+                update_nested_dict(v, key, value, new_value)
+
+
 
 if __name__ == "__main__":
     db = Core("D:/OOP/NoSQL Database project/db")
     
     # Testing 'insert' method - approved
-    #db.insert("users", {"name": "Oleksandr Kolko", "age": 23, "email": "johndoe23@example.com"})
+    #db.insert("users1", {"name": "Oleksandr Kolko", "age": 23, "email": "johndoe23@example.com"})
     #db.insert("users", {"name": "Oleksandr Shchur", "age": 23, "email": "johndoe23@example.com"})
-    #db.insert("users", {"name": "Oleksandr Shchur", "age": 23, "email": "johndoe23@example.com", "degree": True})
+
+    #for i in range(1_000):
+        #db.insert("users1", {"name": "Oleksandr Shchur", "age": 23, "email": "johndoe23@example.com", "degree": True})
      
     # Testing 'select' method - approved
-    #print(db.select("users", '"name" == "Oleksandr Shchur"'))
+    #print(db.select("users1", '"id" == 777'))
 
     # Testing 'delete' method - approved
-    #db.delete("users", '"id" == 27')
+    #db.delete("users1", '"id" == 8')
+    #db.delete("users1", '"id" == 9')
+    #db.delete("users1", '"id" == 10')
 
-    # Testing 'update' method
-    #db.update("users", '"name" == "Richard Hughes"', {"name": "John Doe"})
+    #print(db._is_obj_deleted({"id": 1}))
 
+    #print(db._is_obj_deleted({"id": 5}))
+
+    # Testing 'update' method - approved
+    #db.update("users1", '"id" == 888', {"name": "John Doe"})
+
+    # Testing 'create_index' method
+    #db.create_index("users", ["name"])
+
+    #print(db._get_byte_offset("D:/OOP/NoSQL Database project/db/users.json"))
 
