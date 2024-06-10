@@ -1,8 +1,8 @@
 import json
 import os
-import time
 from threading import Lock
 from src.constants import MAX_FILE_SIZE, FLUSH_THRESHOLD
+from tests.test_time import _timer
 
 class Index:
     def __init__(self, table_name, field):
@@ -45,16 +45,6 @@ class Core:
         key = key.strip().strip('"')
         value = value.strip().strip('"')
         return key, value
-    
-    @staticmethod
-    def _timer(func):
-        def wrapper(*args, **kwargs):
-            start = time.time()
-            result = func(*args, **kwargs)
-            end = time.time()
-            print(f"Function {func.__name__} executed in {end - start:.5f} seconds")
-            return result
-        return wrapper
 
     @_timer
     def insert(self, table_name, obj):  # Приблизно за 1/4 секунди інсертиться
@@ -164,9 +154,9 @@ class Core:
         
     def _is_obj_deleted(self, obj):
         return obj.get('id') in self.delete_markers.get('users', set())
-    
+     
     def flush(self, table_name): # ???
-        pass
+        self._rewrite_table(table_name)
     
     def _get_table_path(self, table_name):
         base_path = os.path.join(self.db_path, f"{table_name}.json")
@@ -228,3 +218,6 @@ if __name__ == "__main__":
 
     # Testing 'update' method - approved
     #db.update("users1", '"id" == 888', {"name": "John Doe"})
+
+    # Testing 'create_index' method
+    #db.create_index("users", ["name"])
