@@ -1,0 +1,5 @@
+2024-06-10 22:40:14,068 INFO: Logging is set up. [in d:\OOP\NoSQL Database project\src\DBWebServer.py:25]
+2024-06-10 22:40:48,955 INFO: Selected from table users with condition "degree"== "true": success [in d:\OOP\NoSQL Database project\src\DBWebServer.py:63]
+2024-06-10 22:44:51,317 INFO: Logging is set up. [in d:\OOP\NoSQL Database project\src\DBWebServer.py:25]
+2024-06-10 22:50:01,097 INFO: Logging is set up. [in d:\OOP\NoSQL Database project\src\DBWebServer.py:25]
+2024-06-10 22:50:26,339 INFO: Selected from table users with condition "degree"== "true": success [in d:\OOP\NoSQL Database project\src\DBWebServer.py:63]
