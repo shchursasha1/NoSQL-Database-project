@@ -1,0 +1,6 @@
+
+-e .
+
+Flask
+Faker
+Postman
