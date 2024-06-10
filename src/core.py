@@ -1,10 +1,8 @@
 import json
 import os
 import time
-#from src.constants import KEY_ERROR, ITEM_ERROR, ARGS_ERROR, MAX_FILE_SIZE
-
-MAX_FILE_SIZE = 10000000  # Maximum file size in bytes (1 MB)
-FLUSH_THRESHOLD = 5  # Set N for how many deletes before a flush
+from threading import Lock
+from src.constants import MAX_FILE_SIZE, FLUSH_THRESHOLD
 
 class Index:
     def __init__(self, table_name, field):
@@ -33,6 +31,7 @@ class Core:
         self.indexes = {}
         self.delete_markers = {}
         self.delete_counter = 0
+        self.lock = Lock()
 
         if not os.path.exists(db_path):
             os.makedirs(db_path)
@@ -48,7 +47,7 @@ class Core:
         return key, value
     
     @staticmethod
-    def _decorator_timer(func):
+    def _timer(func):
         def wrapper(*args, **kwargs):
             start = time.time()
             result = func(*args, **kwargs)
@@ -57,136 +56,117 @@ class Core:
             return result
         return wrapper
 
-    @_decorator_timer
+    @_timer
     def insert(self, table_name, obj):  # Приблизно за 1/4 секунди інсертиться
-        file_path = self._get_table_path(table_name)
+        with self.lock:
+            file_path = self._get_table_path(table_name)
 
-        if table_name not in self.data_files:
-            self.data_files[table_name] = file_path
+            if table_name not in self.data_files:
+                self.data_files[table_name] = file_path
 
-        if os.path.exists(file_path):
-            with open(file_path, 'r') as file:
-                file_content = file.read()
-                if file_content == '':
-                    data = {f"{table_name}": [obj]}
-                    obj['id'] = 1  # Set the id of the first user to 1              
-                else:
-                    file.seek(0)  # Move the cursor back to the start of the file
-                    data = json.load(file)
-                    if table_name not in data:
-                        data[table_name] = []
-                    if not data[f'{table_name}']:
-                        obj['id'] = 1  # Set the id of the first user to 1
+            if os.path.exists(file_path):
+                with open(file_path, 'r') as file:
+                    file_content = file.read()
+                    if file_content == '':
+                        data = {f"{table_name}": [obj]}
+                        obj['id'] = 1  # Set the id of the first user to 1              
                     else:
-                        max_id = max(user.get('id', 0) for user in data[f'{table_name}'])  # Find the current maximum id
-                        obj['id'] = max_id + 1  # Set the id of the new user to the current maximum id + 1
-                    data[f'{table_name}'].append(obj)
-
-        self._write_table(table_name, data)
-
-    @_decorator_timer
-    def update(self, table_name, condition, updates):
-        file_path = self._get_table_path(table_name)
-        data = self._read_table(table_name)
-
-        if os.path.exists(file_path):
-            search_results = self.select(table_name, condition)
-
-            if not search_results:
-                raise ValueError(f"No matching records found in table {table_name} for condition {condition}")
-                
-            for obj in data[table_name]:
-                if obj in search_results:
-                    for key, value in updates.items():
-                        obj[key] = value
+                        file.seek(0)  # Move the cursor back to the start of the file
+                        data = json.load(file)
+                        if table_name not in data:
+                            data[table_name] = []
+                        if not data[f'{table_name}']:
+                            obj['id'] = 1  # Set the id of the first user to 1
+                        else:
+                            max_id = max(user.get('id', 0) for user in data[f'{table_name}'])  # Find the current maximum id
+                            obj['id'] = max_id + 1  # Set the id of the new user to the current maximum id + 1
+                        data[f'{table_name}'].append(obj)
 
             self._write_table(table_name, data)
-        else:
-            raise ValueError(f"Table {table_name} does not exist")
-    
-    @_decorator_timer
-    def select(self, table_name, condition):
-        file_path = self._get_table_path(table_name)
-        data = self._read_table(table_name)
 
-        if os.path.exists(file_path):
-            objects = [obj for obj in data[table_name] if not self._is_obj_deleted(obj)]
-            parsed_condition = self._parse_condition(condition)
-            key, value = parsed_condition
+    @_timer
+    def update(self, table_name, condition, updates):
+        with self.lock:
+            file_path = self._get_table_path(table_name)
+            data = self._read_table(table_name)
 
-            if value == "null":
-                value = None  # Convert 'null' to None
-            elif value == "true":
-                value = True
+            if os.path.exists(file_path):
+                search_results = self.select(table_name, condition)
+
+                if not search_results:
+                    raise ValueError(f"No matching records found in table {table_name} for condition {condition}")
+                    
+                for obj in data[table_name]:
+                    if obj in search_results:
+                        for key, value in updates.items():
+                            obj[key] = value
+
+                self._write_table(table_name, data)
             else:
-                try:
-                    value = int(value)  # Try to convert value to an integer (searching for id)
-                except ValueError:
-                    pass
+                raise ValueError(f"Table {table_name} does not exist")
+    
+    @_timer
+    def select(self, table_name, condition):
+        with self.lock:
+            file_path = self._get_table_path(table_name)
+            data = self._read_table(table_name)
 
-            results = [check for check in objects if key in check and check[key] == value]
+            if os.path.exists(file_path):
+                objects = [obj for obj in data[table_name] if not self._is_obj_deleted(obj)]
+                parsed_condition = self._parse_condition(condition)
+                key, value = parsed_condition
 
-            if not results:
-                raise ValueError(f"No matching records found in table {table_name} for condition {condition}")
-            
-            return results
-        else:
-            raise ValueError(f"Table {table_name} does not exist")
+                if value == "null":
+                    value = None  # Convert 'null' to None
+                elif value == "true":
+                    value = True
+                else:
+                    try:
+                        value = int(value)  # Try to convert value to an integer (searching for id)
+                    except ValueError:
+                        pass
 
-    @_decorator_timer
+                results = [check for check in objects if key in check and check[key] == value]
+
+                if not results:
+                    raise ValueError(f"No matching records found in table {table_name} for condition {condition}")
+                
+                return results
+            else:
+                raise ValueError(f"Table {table_name} does not exist")
+
+    @_timer
     def delete(self, table_name, condition):
-        all_data = self._read_table(table_name)
-        data_to_delete = self.select(table_name, condition)
+        with self.lock:
+            all_data = self._read_table(table_name)
+            data_to_delete = self.select(table_name, condition)
 
-        if data_to_delete:
-            if table_name not in self.delete_markers:
-                self.delete_markers[table_name] = set()
+            if data_to_delete:
+                if table_name not in self.delete_markers:
+                    self.delete_markers[table_name] = set()
 
-            for obj in data_to_delete:
-                id = obj.get('id')
+                for obj in data_to_delete:
+                    id = obj.get('id')
 
-                if id in self.delete_markers[table_name]:
-                    print(f"Object with id {id} is already marked for deletion")
+                    if id in self.delete_markers[table_name]:
+                        print(f"Object with id {id} is already marked for deletion")
 
-                self.delete_markers[table_name].add(id)
-                self.delete_counter += 1
+                    self.delete_markers[table_name].add(id)
+                    self.delete_counter += 1
 
-                if self.delete_counter >= FLUSH_THRESHOLD:
-                    remaining_data = list(filter(lambda obj: obj.get('id') not in self.delete_markers[table_name], all_data[table_name]))
-                    self._rewrite_table(table_name, remaining_data)
-                    self.delete_counter = 0
-                    self.delete_markers[table_name].clear()
-        else:
-            raise ValueError(f"Data to delete not found in table {table_name}")
+                    if self.delete_counter >= FLUSH_THRESHOLD:
+                        remaining_data = list(filter(lambda obj: obj.get('id') not in self.delete_markers[table_name], all_data[table_name]))
+                        self._rewrite_table(table_name, remaining_data)
+                        self.delete_counter = 0
+                        self.delete_markers[table_name].clear()
+            else:
+                raise ValueError(f"Data to delete not found in table {table_name}")
         
     def _is_obj_deleted(self, obj):
         return obj.get('id') in self.delete_markers.get('users', set())
     
     def flush(self, table_name): # ???
         pass
-
-    def create_index(self, table_name, fields): # не працює, можна використати для приклада
-        if table_name not in self.indexes:
-            self.indexes[table_name] = {}
-
-        for field in fields:
-            print(field)
-            self.indexes[table_name][field] = self._create_index_for_field(table_name, field)
-
-    def _create_index_for_field(self, table_name, field):  # не працює, можна використати для приклада
-        file_path = self._get_table_path(table_name)
-        index = {}
-        
-        with open(file_path, 'r') as f:
-            offset = 0
-            for line in f:
-                obj = json.loads(line)
-                if field in obj:
-                    if obj[field] not in index:
-                        index[obj[field]] = []
-                    index[obj[field]].append(offset)
-                offset += len(line)
-        return index
     
     def _get_table_path(self, table_name):
         base_path = os.path.join(self.db_path, f"{table_name}.json")
@@ -208,7 +188,6 @@ class Core:
         file_path = self._get_table_path(table_name)
 
         with open(file_path, 'w') as file:
-            #file.seek(start_byte)
             json.dump(data, file, indent=4)
 
     def _rewrite_table(self, table_name, new_data):
@@ -222,37 +201,7 @@ class Core:
             with open(file_path, 'w') as file:
                 json.dump(data, file, indent=4)
         else:
-            raise ValueError(f"Table {table_name} does not exist")
-        
-    def _get_byte_offset(self, file_path):   # не працює, можна використати для приклада
-        with open(file_path, 'rb') as file:
-            file.seek(0, os.SEEK_END)  # Move the cursor to the end of the file
-            file_size = file.tell()    # Get the current position of the cursor, which is the size of the file
-            #return f"File size: {file_size} bytes, {os.path.getsize(file_path)} bytes"
-            return file.read()
-
-    # Ці теж можна використати як приклад для реалізації
-
-    def _get_index_by_key(self, table_name, field):
-        return self.indexes[table_name][field]
-    
-    def _search_in_index_by_value(self, table_name, field, value):
-        index = self._get_index_by_key(table_name, field)
-        return index.get(value, [])
-    
-    def _get_from_file_by_adress(self, file_path, byte_offset):
-        with open(file_path, 'r') as file:
-            file.seek(byte_offset)
-            return json.load(file) 
-        
-def update_nested_dict(data, key, value, new_value):
-    if isinstance(data, dict):
-        for k, v in data.items():
-            if k == key and v == value:
-                data[k] = new_value
-            elif isinstance(v, dict):
-                update_nested_dict(v, key, value, new_value)
-
+            raise ValueError(f"Table {table_name} does not exist")       
 
 
 if __name__ == "__main__":
@@ -279,9 +228,3 @@ if __name__ == "__main__":
 
     # Testing 'update' method - approved
     #db.update("users1", '"id" == 888', {"name": "John Doe"})
-
-    # Testing 'create_index' method
-    #db.create_index("users", ["name"])
-
-    #print(db._get_byte_offset("D:/OOP/NoSQL Database project/db/users.json"))
-
