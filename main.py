@@ -10,12 +10,11 @@ class NoSQLDatabase:
     It uses JSON as the underlying data format for storing documents.
 
     Attributes:
-        name (str): The name of the database.
-        data (dict): A dictionary to store the database documents.
+        db_dir (str): The directory where the database files will be stored.
 
     Methods:
-        insert(document): Inserts a new document into the database.
-        find(query): Retrieves documents from the database based on a query.
+        insert(object): Inserts a new object into the database.
+        select(query): Retrieves documents from the database based on a query.
         update(query, update): Updates documents in the database based on a query and an update.
         delete(query): Deletes documents from the database based on a query.
     """
@@ -50,7 +49,7 @@ if __name__ == "__main__":
     #executor.execute("insert users {'name': 'John Doe', 'age': 30, 'email': 'null'}")
 
     # Testing 'select' method - approved
-    #print(executor.execute('select users where "name" == "Oleksandr Kolko"'))
+    print(executor.execute('select users where "name" == "Oleksandr Kolko"'))
     #print(executor.execute('select users1 where "degree" == "true"'))
     #print(executor.execute('select users where "email" == "johndoe23@example.com"'))
     #print(executor.execute('select users1 where "id" == 644'))
@@ -66,4 +65,4 @@ if __name__ == "__main__":
     #executor.execute('update users set {"name": "John 384836845684856"} where "id" == 24')
 
     # Testing 'start_server' - approved
-    #db.start_server()
+    db.start_server()
